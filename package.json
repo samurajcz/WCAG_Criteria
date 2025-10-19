@@ -1,0 +1,18 @@
+{
+  "name": "wcag_criteria",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "private": true,
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cheerio": "^1.1.2",
+    "pa11y": "^9.0.1",
+    "xlsx": "^0.18.5"
+  }
+}
