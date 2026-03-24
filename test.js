@@ -1,16 +1,15 @@
 const pa11y = require('pa11y');
 const XLSX = require('xlsx');
-// const fetch = require('node-fetch'); // Použijeme node-fetch pro HTTP requesty (již není potřeba v Node.js v18+)
-const cheerio = require('cheerio');   // Použijeme cheerio pro parsování HTML
+const cheerio = require('cheerio');   // cheerio pro parsování HTML
 const { URL } = require('url');       // Pro práci s URL adresami
 
 // --- Konfigurace ---
-const START_URL = 'https://example.com'; // Zde zadejte počáteční URL vašeho webu
-const MAX_CRAWL_DEPTH = 2; // Hloubka pro procházení webu (0 = jen startovní URL, 1 = startovní URL + odkazy z ní, atd.)
-const EXCEL_FILE = 'wcag_crawl_results.xlsx'; // Název výstupního Excel souboru
+const START_URL = 'https://www.zsopatovice.cz/w/'; // Index/počáteční URL
+const MAX_CRAWL_DEPTH = 1; // Hloubka pro procházení webu (0 = jen startovní URL, 1 = startovní URL + odkazy z ní)
+const EXCEL_FILE = 'wcag_crawl_results.xlsx'; // Název výstupního Excel souboru // csv/json
 const PA11Y_OPTIONS = {
     reporter: 'json',
-    standard: 'WCAG2AA', // Např. WCAG2A, WCAG2AA, WCAG2AAA
+    standard: 'WCAG2AAA', // Např. WCAG2A, WCAG2AA, WCAG2AAA
     includeWarnings: true,
     includeNotices: true,
     wait: 5000, // Počkat 5 sekund před spuštěním testu
@@ -48,7 +47,7 @@ async function crawl(currentUrl, depth) {
 
     try {
         const urlObj = new URL(currentUrl);
-        // Ujisti se, že zůstáváme na stejné doméně
+        // Test jestli se nacázíme stále na stejné doméně
         if (getBaseUrl(currentUrl) !== BASE_DOMAIN) {
             console.log(`Přeskočeno (externí odkaz): ${currentUrl}`);
             return;
@@ -56,7 +55,7 @@ async function crawl(currentUrl, depth) {
 
         console.log(`Crawling (hloubka ${depth}): ${currentUrl}`);
         visitedUrls.add(currentUrl);
-        urlsToTest.push(currentUrl); // Přidáme URL k testování Pa11y
+        urlsToTest.push(currentUrl); // Poslání URL k testování Pa11y
 
         const response = await fetch(currentUrl, { timeout: 10000 }); // Nastavíme timeout na 10 sekund
         if (!response.ok) {
@@ -72,7 +71,7 @@ async function crawl(currentUrl, depth) {
             if (href) {
                 try {
                     const absoluteUrl = new URL(href, currentUrl).href;
-                    // Zkontroluj, zda je to interní odkaz a ještě jsme ho nenavštívili
+                    // kontrola, zda je to interní odkaz a ještě nenavštívený
                     if (getBaseUrl(absoluteUrl) === BASE_DOMAIN && !visitedUrls.has(absoluteUrl) && urlsToTest.length < MAX_PAGES_TO_CRAWL) {
                         crawl(absoluteUrl, depth + 1); // Rekurzivně crawluj dál
                     }
@@ -90,7 +89,7 @@ async function crawl(currentUrl, depth) {
 // Hlavní funkce pro spuštění celého procesu
 async function runAccessibilityCrawlAndExport() {
     console.log(`Spouštění web crawleru od: ${START_URL} (hloubka: ${MAX_CRAWL_DEPTH})`);
-    await crawl(START_URL, 0); // Spustíme crawling od počáteční URL s hloubkou 0
+    await crawl(START_URL, 0); // Spuštění crawlingu od počáteční URL s hloubkou 0
     console.log(`Crawler dokončen. Nalezeno ${urlsToTest.length} URL adres pro testování.`);
 
     if (urlsToTest.length === 0) {
