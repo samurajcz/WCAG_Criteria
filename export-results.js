@@ -1,13 +1,13 @@
 const pa11y = require('pa11y');
-const XLSX = require('xlsx'); // Stále potřebujeme pro CSV výstup z JSON, i když ne pro .xlsx soubor
+const XLSX = require('xlsx');
 const cheerio = require('cheerio');
 const { URL } = require('url');
 const fs = require('fs');
 
 // --- Konfigurace ---
 const START_WEBSITES_FILE = 'start_websites.txt';
-const MAX_CRAWL_DEPTH = 1;
-const CSV_FILE = 'wcag_all_websites_results_detail.csv'; // Změněno na CSV
+const MAX_CRAWL_DEPTH = 2;
+const CSV_FILE = 'wcag_all_websites_results_detail.csv'; // Detailní výstup do CSV
 const PA11Y_OPTIONS = {
     reporter: 'json',
     standard: 'WCAG2AAA', // Testuje nyní A, AA i AAA kritéria
@@ -18,7 +18,7 @@ const PA11Y_OPTIONS = {
 const MAX_PAGES_TO_CRAWL_PER_WEBSITE = 50;
 const CONCURRENCY_LIMIT = 5;
 
-// Konfigurace bodových penalizací za problémy (pro Total_Penalty_Score)
+// Konfigurace bodových penalizací za problémy (pro Total_Penalty_Score stránky a Issue_Penalty_Score)
 const PENALTIES = {
     error: {
         'WCAG2A': 10,
@@ -61,20 +61,24 @@ function getWcagLevel(wcagCode) {
 
 // NOVÁ FUNKCE: Vyhodnotí stránku a vrátí skóre, rating a další metriky
 function evaluatePageAccessibility(issues) {
-    let totalPenaltyScore = 0;
+    let totalPenaltyScore = 0; // Celkové skóre pro stránku
+    let totalPenaltyScoreErrorsOnly = 0; // Skóre jen pro chyby
     let automatedAAPass = true; // Předpokládáme, že stránka prošla (0 A/AA chyb)
-    let aaaIssueCount = 0;
-
-    const errorCountA = 0;
-    const errorCountAA = 0;
+    let aaaIssueCount = 0; // Počet AAA problémů (error/warning)
 
     issues.forEach(issue => {
         const type = issue.type;
         const level = getWcagLevel(issue.code);
 
-        // Přiřazení bodů pro Total_Penalty_Score
-        if (PENALTIES[type] && PENALTIES[type][level] !== undefined) {
-            totalPenaltyScore += PENALTIES[type][level];
+        // Získání penalizace pro konkrétní problém
+        const issuePenalty = (PENALTIES[type] && PENALTIES[type][level] !== undefined) ? PENALTIES[type][level] : 0;
+
+        // Přičtení k celkovému skóre stránky
+        totalPenaltyScore += issuePenalty;
+
+        // Přičtení k chybovému skóre stránky (jen typ 'error')
+        if (type === 'error') {
+            totalPenaltyScoreErrorsOnly += issuePenalty;
         }
 
         // Kontrola pro Automated_AA_Pass
@@ -104,6 +108,7 @@ function evaluatePageAccessibility(issues) {
 
     return {
         totalPenaltyScore,
+        totalPenaltyScoreErrorsOnly, // NOVÉ
         automatedAAPass,
         aaaIssueCount,
         rating
@@ -193,6 +198,7 @@ async function runPa11yTestsConcurrently(urls, websiteStartUrl) {
             console.log(`  Testování (Pa11y) ${runningTasks.size + 1}/${CONCURRENCY_LIMIT} běžících: ${url}...`);
             let pageEvaluation = { // Inicializace, pokud dojde k chybě
                 totalPenaltyScore: 0,
+                totalPenaltyScoreErrorsOnly: 0, // NOVÉ
                 automatedAAPass: false,
                 aaaIssueCount: 0,
                 rating: 'Chyba při testu'
@@ -204,18 +210,23 @@ async function runPa11yTestsConcurrently(urls, websiteStartUrl) {
                 pageEvaluation = evaluatePageAccessibility(results.issues);
 
                 if (results.issues && results.issues.length > 0) {
-                    // Pro každý problém přidej i skóre a rating stránky, ke které patří
                     results.issues.forEach(issue => {
+                        const type = issue.type;
+                        const level = getWcagLevel(issue.code);
+                        const issuePenalty = (PENALTIES[type] && PENALTIES[type][level] !== undefined) ? PENALTIES[type][level] : 0;
+
                         allIssues.push({
-                            'Website Root URL': websiteStartUrl,
-                            'Tested URL': url,
-                            'Document Title': results.documentTitle || 'N/A',
-                            'Automated_AA_Pass': pageEvaluation.automatedAAPass, // NOVÉ
-                            'Total_Penalty_Score': pageEvaluation.totalPenaltyScore, // NOVÉ
-                            'AAA_Issue_Count': pageEvaluation.aaaIssueCount, // NOVÉ
-                            'Accessibility_Rating': pageEvaluation.rating, // NOVÉ
+                            'Website_Root_URL': websiteStartUrl,
+                            'Tested_URL': url,
+                            'Document_Title': results.documentTitle || 'N/A',
+                            'Automated_AA_Pass': pageEvaluation.automatedAAPass,
+                            'Total_Penalty_Score_Page': pageEvaluation.totalPenaltyScore, // Přejmenováno pro jasnost
+                            'Total_Penalty_Score_ErrorsOnly_Page': pageEvaluation.totalPenaltyScoreErrorsOnly, // NOVÉ
+                            'AAA_Issue_Count_Page': pageEvaluation.aaaIssueCount, // Přejmenováno pro jasnost
+                            'Accessibility_Rating_Page': pageEvaluation.rating, // Přejmenováno pro jasnost
                             'Issue_Type': issue.type,
                             'WCAG_Code': issue.code,
+                            'Issue_Penalty_Score': issuePenalty, // NOVÉ: penalizace za konkrétní problém
                             'Message': issue.message,
                             'Context': issue.context,
                             'Selector': issue.selector,
@@ -223,40 +234,44 @@ async function runPa11yTestsConcurrently(urls, websiteStartUrl) {
                             'Runner_Extras': JSON.stringify(issue.runnerExtras)
                         });
                     });
-                    console.log(`    Nalezeno ${results.issues.length} problémů na ${url}. Skóre: ${pageEvaluation.totalPenaltyScore}, Hodnocení: ${pageEvaluation.rating}`);
+                    console.log(`    Nalezeno ${results.issues.length} problémů na ${url}. Celkové skóre: ${pageEvaluation.totalPenaltyScore}, Skóre chyb: ${pageEvaluation.totalPenaltyScoreErrorsOnly}, Hodnocení: ${pageEvaluation.rating}`);
                 } else {
-                    // Pokud nejsou problémy, ale chceme stránku zaznamenat i do Excelu s jejím hodnocením
+                    // Pokud nejsou problémy, záznam pro stránku s "Výborná" hodnocením
                     allIssues.push({
-                        'Website Root URL': websiteStartUrl,
-                        'Tested URL': url,
-                        'Document Title': results.documentTitle || 'N/A',
+                        'Website_Root_URL': websiteStartUrl,
+                        'Tested_URL': url,
+                        'Document_Title': results.documentTitle || 'N/A',
                         'Automated_AA_Pass': pageEvaluation.automatedAAPass,
-                        'Total_Penalty_Score': pageEvaluation.totalPenaltyScore,
-                        'AAA_Issue_Count': pageEvaluation.aaaIssueCount,
-                        'Accessibility_Rating': pageEvaluation.rating,
+                        'Total_Penalty_Score_Page': pageEvaluation.totalPenaltyScore,
+                        'Total_Penalty_Score_ErrorsOnly_Page': pageEvaluation.totalPenaltyScoreErrorsOnly,
+                        'AAA_Issue_Count_Page': pageEvaluation.aaaIssueCount,
+                        'Accessibility_Rating_Page': pageEvaluation.rating,
                         'Issue_Type': 'N/A',
                         'WCAG_Code': 'N/A',
+                        'Issue_Penalty_Score': 0, // Žádné problémy, žádná penalizace
                         'Message': 'Žádné automaticky detekované problémy.',
                         'Context': 'N/A',
                         'Selector': 'N/A',
                         'Runner': 'N/A',
                         'Runner_Extras': 'N/A'
                     });
-                    console.log(`    Žádné problémy nenalezeny na ${url}. Skóre: ${pageEvaluation.totalPenaltyScore}, Hodnocení: ${pageEvaluation.rating}`);
+                    console.log(`    Žádné problémy nenalezeny na ${url}. Celkové skóre: ${pageEvaluation.totalPenaltyScore}, Skóre chyb: ${pageEvaluation.totalPenaltyScoreErrorsOnly}, Hodnocení: ${pageEvaluation.rating}`);
                 }
             } catch (error) {
                 console.error(`    Chyba při testování URL ${url}:`, error.message);
                 // V případě chyby záznam s chybovým hodnocením
                 allIssues.push({
-                    'Website Root URL': websiteStartUrl,
-                    'Tested URL': url,
-                    'Document Title': 'N/A',
+                    'Website_Root_URL': websiteStartUrl,
+                    'Tested_URL': url,
+                    'Document_Title': 'N/A',
                     'Automated_AA_Pass': pageEvaluation.automatedAAPass,
-                    'Total_Penalty_Score': pageEvaluation.totalPenaltyScore,
-                    'AAA_Issue_Count': pageEvaluation.aaaIssueCount,
-                    'Accessibility_Rating': 'Chyba při testu', // Speciální hodnocení
+                    'Total_Penalty_Score_Page': pageEvaluation.totalPenaltyScore,
+                    'Total_Penalty_Score_ErrorsOnly_Page': pageEvaluation.totalPenaltyScoreErrorsOnly,
+                    'AAA_Issue_Count_Page': pageEvaluation.aaaIssueCount,
+                    'Accessibility_Rating_Page': 'Chyba při testu',
                     'Issue_Type': 'Error (Pa11y Failed)',
                     'WCAG_Code': 'N/A',
+                    'Issue_Penalty_Score': 0, // Chyba v testu, ne WCAG penalizace
                     'Message': `Nepodařilo se otestovat stránku: ${error.message}`,
                     'Context': 'N/A',
                     'Selector': 'N/A',
@@ -328,15 +343,6 @@ async function main() {
     } catch (error) {
         console.error(`Chyba při ukládání CSV souboru:`, error.message);
     }
-
-    // Volitelné: Uložení do JSON souboru (pro budoucí programové zpracování)
-    // const JSON_FILE = 'wcag_all_websites_results_detail.json';
-    // try {
-    //     fs.writeFileSync(JSON_FILE, JSON.stringify(allIssues, null, 2), 'utf8');
-    //     console.log(`Výsledky byly úspěšně uloženy také do souboru: ${JSON_FILE}`);
-    // } catch (error) {
-    //     console.error(`Chyba při ukládání JSON souboru:`, error.message);
-    // }
 }
 
 // Spuštění hlavního procesu
